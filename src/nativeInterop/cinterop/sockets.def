@@ -1,0 +1,9 @@
+headers = sys/socket.h sys/errno.h netdb.h stdio.h string.h unistd.h stdlib.h netinet/in.h sys/_endian.h arpa/inet.h
+compilerOpts.ios = -D_ANSI_SOURCE -D_POSIX_SOURCE
+compilerOpts.osx = -D_ANSI_SOURCE -D_POSIX_SOURCE
+
+---
+
+static inline int interop_errno() { return errno; }
+static inline uint16_t interop_htons(uint16_t x) { return htons(x); }
+static inline in_addr_t interop_addr(const char *str) { return inet_addr(str); }
