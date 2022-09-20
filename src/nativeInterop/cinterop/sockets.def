@@ -4,6 +4,6 @@ compilerOpts.osx = -D_ANSI_SOURCE -D_POSIX_SOURCE
 
 ---
 
-static inline int interop_errno() { return errno; }
+static inline int getErrno() { return errno; }
 static inline uint16_t interop_htons(uint16_t x) { return htons(x); }
 static inline in_addr_t interop_addr(const char *str) { return inet_addr(str); }

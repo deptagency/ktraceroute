@@ -3,26 +3,15 @@ import random
 import socket
 
 
-def get_addr(addr):
-    hostname, port = addr
-    print(port)
-    return hostname, socket.htons(port)
-
-
 class EchoServerProtocol:
     def connection_made(self, transport):
         self.transport = transport
 
     def datagram_received(self, data, addr):
         message = data.decode()
-        print('Received %r from %s' % (message, get_addr(addr)))
-        rand = random.randint(0, 10)
-        if rand >= 4:
-            print('Send %r to %s' % (message, get_addr(addr)))
-            self.transport.sendto(data, addr)
-        else:
-            print('Send %r to %s' % (message, get_addr(addr)))
-            self.transport.sendto(data, addr)
+        print('Received %r from %s' % (message, addr))
+        print('Send %r to %s' % (b"a"*64, addr))
+        self.transport.sendto(b"a"*64, addr)
 
 
 loop = asyncio.get_event_loop()

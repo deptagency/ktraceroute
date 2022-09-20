@@ -1,8 +1,8 @@
 plugins {
-    kotlin("multiplatform") version "1.7.10"
+    kotlin("multiplatform") version "1.7.20-RC"
 }
 
-group = "me.mike"
+group = "com.deptagency"
 version = "1.0-SNAPSHOT"
 
 repositories {
@@ -32,8 +32,26 @@ kotlin {
             }
         }
     }
+
     sourceSets {
-        val nativeMain by getting
+        all {
+            languageSettings.apply {
+                optIn("kotlin.Experimental")
+                optIn("kotlinx.cli.ExperimentalCli")
+            }
+        }
+
+        commonMain {
+            dependencies {
+                implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.5")
+//                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
+            }
+        }
+
+        val nativeMain by getting {
+//            sourceSets["macosMain"].dependsOn(this)
+            dependsOn(sourceSets["commonMain"])
+        }
         val nativeTest by getting
     }
 }
