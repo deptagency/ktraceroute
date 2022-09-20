@@ -50,11 +50,29 @@ fun identifyHost(host: String): String? {
             break
         }
         if (res != null) {
-            return res.pointed.ai_addr?.let { getAddress(it.pointed) }
+            val address = res.pointed.ai_addr?.let { getAddress(it.pointed) }
+            if (address != null) {
+                return address
+            }
         }
         return null
     }
 }
+
+fun getTime(): timespec {
+    memScoped {
+        val spec = alloc<timespec>()
+        clock_gettime(CLOCK_MONOTONIC, spec.ptr)
+        return spec
+    }
+}
+
+fun getElapsedTimeMs(start: timespec, end: timespec): ULong {
+    var resultMs = (end.tv_sec - start.tv_sec).toULong() * 1000u
+    resultMs += (end.tv_nsec - start.tv_nsec).toULong() / 1000u
+    return resultMs
+}
+
 
 fun getAddress(addr: sockaddr): String? {
     return when (addr.sa_family.toInt()) {
@@ -86,20 +104,26 @@ fun getAddress(addr: sockaddr): String? {
     }
 }
 
+sealed class ProbeResult {
+    data class SuccessfulHop(val address: String, val time: ULong): ProbeResult()
+    data class Done(val address: String, val time: ULong): ProbeResult()
+    data class Timeout(val info: String): ProbeResult()
+    data class Failure(val info: String): ProbeResult()
+}
+
 fun probeHop(
-    timeout: Int,
     port: UShort,
-    host: String,
+    address: String,
     timeoutMs: Int,
     currentTtl: Int,
     packetSize: Int,
     targetAddress: String
-) {
+): ProbeResult {
     memScoped {
         val serverAddr = alloc<sockaddr_in>()
         memset(serverAddr.ptr, 0, sizeOf<sockaddr_in>().convert());
         serverAddr.sin_family = AF_INET.convert()
-        serverAddr.sin_addr.s_addr = inet_addr(host)
+        serverAddr.sin_addr.s_addr = inet_addr(address)
         serverAddr.sin_port = port
         val serverAddrSize = sizeOf<sockaddr_in>().convert<socklen_t>()
         val sockAddr = serverAddr.ptr.reinterpret<sockaddr>()
@@ -126,47 +150,71 @@ fun probeHop(
         // Send a single null byte UDP packet
         val payload = byteArrayOf(0x0)
         val error = sendto(sendSocket, allocArrayOf(payload), 0, 0, sockAddr, serverAddrSize)
-        if (error < 0) {
-            println("error sending UDP packet, errno:${getErrno()}")
-            return
+        if (error == -1L) {
+            return ProbeResult.Failure("error sending UDP packet, errno:${getErrno()}")
         }
 
         val buf = ByteArray(packetSize)
         val recvAddr = alloc<sockaddr>()
         val err = recvfrom(recvSocket, buf.toCValues(), buf.size.convert(),0, recvAddr.ptr,
             cValuesOf(sizeOf<sockaddr>().toUInt()))
-        if (err < 0) {
-            println("error receiving packet, errno:${getErrno()}")
-            return
+        if (err == -1L) {
+            return ProbeResult.Failure("error receiving packet, errno:${getErrno()}")
         }
-        val address = getAddress(recvAddr)
-        if (address != null) {
-            println("addr:${address}")
-            if (address == targetAddress) {
-                close(recvSocket)
-                close(sendSocket)
-                return
-            }
-            currentTtl += 1
-        } else {
-            return
-        }
-
         close(recvSocket)
         close(sendSocket)
+        val recvAddress = getAddress(recvAddr)
+        if (recvAddress != null) {
+            return if (recvAddress == targetAddress) {
+                ProbeResult.Done(recvAddress, 0u) // TODO: time
+            } else {
+                ProbeResult.SuccessfulHop(recvAddress,0u) // TODO: time
+            }
+        }
+        return ProbeResult.Failure("address not found in response")
     }
 }
 
 fun traceroute(args: Args) {
-    val ttl = args.firstHop
     val maxHops = args.maxHops
     val port = interop_htons(args.port.toUShort())
     var currentTtl = args.firstHop
-    val host = identifyHost(args.host)
-    println("host: $host")
-    println("port: ${args.port}")
+    val address = identifyHost(args.host) ?: throw Exception("failed to get an address")
+    println("address: $address, port: ${args.port}")
+    var retries = 0
     while (true) {
         println("currentTtl:$currentTtl")
-
+        val probeResult = probeHop(
+            timeoutMs = args.timeout,
+            port = port,
+            address = address,
+            currentTtl = currentTtl,
+            packetSize = args.packetSize,
+            targetAddress = address
+        )
+        when (probeResult) {
+            is ProbeResult.Failure -> {
+                println("failed: ${probeResult.info}")
+                return
+            }
+            is ProbeResult.Done -> {
+                println("finished")
+                return
+            }
+            is ProbeResult.SuccessfulHop -> {
+                currentTtl += 1
+                println("hop ${currentTtl}, ${probeResult.address}: ${probeResult.time}ms")
+            }
+            is ProbeResult.Timeout -> {
+                if (retries >= args.retries) {
+                    retries = 0
+                    currentTtl += 1
+                }
+            }
+        }
+        if (currentTtl >= maxHops) {
+            println("hit max hops")
+            return
+        }
     }
 }
