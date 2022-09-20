@@ -144,9 +144,6 @@ fun probeHop(
         // This sets the current hop TTL
         setsockopt(sendSocket, IPPROTO_IP, IP_TTL, cValuesOf(currentTtl), sizeOf<IntVar>().convert())
 
-        println("sendSocket=$sendSocket")
-        println("recvSocket=$recvSocket")
-
         // Send a single null byte UDP packet
         val payload = byteArrayOf(0x0)
         val error = sendto(sendSocket, allocArrayOf(payload), 0, 0, sockAddr, serverAddrSize)
