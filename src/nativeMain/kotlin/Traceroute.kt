@@ -158,11 +158,15 @@ fun probeHop(
         val recvAddr = alloc<sockaddr>()
         val err = recvfrom(recvSocket, buf.toCValues(), buf.size.convert(),0, recvAddr.ptr,
             cValuesOf(sizeOf<sockaddr>().toUInt()))
-        if (err == -1L) {
-            return ProbeResult.Failure("error receiving packet, errno:${getErrno()}")
-        }
         close(recvSocket)
         close(sendSocket)
+        if (err == -1L) {
+            val errno = getErrno()
+            if (errno == 35) {
+                return ProbeResult.Timeout("timed out")
+            }
+            return ProbeResult.Failure("error receiving packet, errno:$errno")
+        }
         val recvAddress = getAddress(recvAddr)
         if (recvAddress != null) {
             return if (recvAddress == targetAddress) {
@@ -210,6 +214,7 @@ fun traceroute(args: Args) {
                     retries = 0
                     currentTtl += 1
                 }
+                retries += 1
             }
         }
         if (currentTtl >= maxHops) {
