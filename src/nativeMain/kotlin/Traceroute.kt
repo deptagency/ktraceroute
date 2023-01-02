@@ -1,4 +1,5 @@
 import kotlinx.cinterop.*
+import kotlinx.cinterop.ByteVar
 import platform.darwin.*
 import platform.posix.*
 import sockets.*
@@ -18,13 +19,40 @@ data class Args(
     val retries: Int
 ) {}
 
-fun identifyHost(host: String): String? {
+fun getInterfaceSockaddr(name: String): sockaddr_in? {
+    memScoped {
+        val addrs = nativeHeap.allocPointerTo<ifaddrs>()
+        if (getifaddrs(addrs.ptr) == -1) {
+            return null
+        }
+        var addrsIt: CPointer<ifaddrs>? = addrs.value
+        while (addrsIt != null) {
+            val ifaAddr = addrsIt.pointed!!.ifa_addr?.pointed
+            val saFamily = ifaAddr?.sa_family?.toInt()
+            val ifaName = addrsIt.pointed!!.ifa_name?.toKString()
+            println("ifaName:$ifaName")
+            if (name == ifaName) {
+                when (saFamily) {
+                    AF_INET -> {
+                        println("found an interface")
+                        return ifaAddr.reinterpret()
+                    }
+                }
+            }
+            addrsIt = addrsIt.pointed.ifa_next
+        }
+        println("none found")
+        return null
+    }
+}
+
+fun identifyHost(host: String): CPointer<sockaddr>? {
     memScoped {
         val info = nativeHeap.allocPointerTo<addrinfo>()
         val hints = alloc<addrinfo>()
         memset(hints.ptr, 0, sizeOf<addrinfo>().convert())
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = 0;
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = 0
         val result = getaddrinfo(host, "http", hints.ptr, info.ptr)
         if (result != 0) {
             println("error looking up hostname: ${gai_strerror(result)}")
@@ -49,13 +77,15 @@ fun identifyHost(host: String): String? {
 
             break
         }
-        if (res != null) {
-            val address = res.pointed.ai_addr?.let { getAddress(it.pointed) }
-            if (address != null) {
-                return address
-            }
-        }
-        return null
+        return res?.pointed?.ai_addr
+//        if (res != null) {
+//
+////                ?.let { getAddress(it.pointed) }
+////            if (address != null) {
+////                return address
+////            }
+//        }
+//        return null
     }
 }
 
@@ -73,8 +103,32 @@ fun getElapsedTimeMs(start: timespec, end: timespec): ULong {
     return resultMs
 }
 
+fun checkRoot() {
+    if (getuid() != 0u) {
+        println("This program must be run with root to use raw sockets.")
+    }
+}
 
-fun getAddress(addr: sockaddr): String? {
+fun getInAddr(addr: sockaddr): in_addr? {
+    return when (addr.sa_family.toInt()) {
+        AF_INET -> {
+//            val s = ByteArray([INET_ADDRSTRLEN)
+            val saIn = addr.reinterpret<sockaddr_in>()
+            println("reinterpreting sin")
+            return saIn.sin_addr
+        }
+//        AF_INET6 -> {
+//            val s = ByteArray(INET6_ADDRSTRLEN)
+//            val saIn = addr.reinterpret<sockaddr_in6>()
+//            s.usePinned { pinned ->
+//                return saIn.sin6_addr
+//            }
+//        }
+        else -> null
+    }
+}
+
+fun getAddressStr(addr: sockaddr): String? {
     return when (addr.sa_family.toInt()) {
         AF_INET -> {
             val s = ByteArray(INET_ADDRSTRLEN)
@@ -111,62 +165,174 @@ sealed class ProbeResult {
     data class Failure(val info: String): ProbeResult()
 }
 
+@OptIn(ExperimentalUnsignedTypes::class)
 fun probeHop(
     port: UShort,
-    address: String,
+    destination: sockaddr,
+    destinationStr: String,
     timeoutMs: Int,
     currentTtl: Int,
-    packetSize: Int,
-    targetAddress: String
+    packetSize: Int
 ): ProbeResult {
     memScoped {
-        val serverAddr = alloc<sockaddr_in>()
-        memset(serverAddr.ptr, 0, sizeOf<sockaddr_in>().convert());
-        serverAddr.sin_family = AF_INET.convert()
-        serverAddr.sin_addr.s_addr = inet_addr(address)
-        serverAddr.sin_port = port
-        val serverAddrSize = sizeOf<sockaddr_in>().convert<socklen_t>()
-        val sockAddr = serverAddr.ptr.reinterpret<sockaddr>()
         // Set up the socket to receive inbound packets
         val recvSocket = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)
-        bind(recvSocket, sockAddr, serverAddrSize)
+        bind(recvSocket, destination.ptr, sizeOf<sockaddr>().convert())
 
-        val timeval = alloc<timeval>()
-        with (timeval) {
-            this.tv_sec = 0
-            this.tv_usec = timeoutMs * 1000
-        }
-        setsockopt(recvSocket, SOL_SOCKET, SO_RCVTIMEO, timeval.ptr, sizeOf<timeval>().convert())
+//        val timeval = alloc<timeval>()
+//        with (timeval) {
+//            this.tv_sec = 0
+//            this.tv_usec = timeoutMs * 1000
+//        }
+//        setsockopt(recvSocket, SOL_SOCKET, SO_RCVTIMEO, timeval.ptr, sizeOf<timeval>().convert())
 
-        // Set up the socket to send packets out
-        val sendSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        bind(sendSocket, sockAddr, serverAddrSize)
-        // This sets the current hop TTL
-        setsockopt(sendSocket, IPPROTO_IP, IP_TTL, cValuesOf(currentTtl), sizeOf<IntVar>().convert())
-
+//        sendto (sd, packet, IP4_HDRLEN + ICMP_HDRLEN + datalen, 0, (struct sockaddr *) &sin, sizeof (struct sockaddr)) < 0)
         // Send a single null byte UDP packet
-        val payload = byteArrayOf(0x0)
-        val error = sendto(sendSocket, allocArrayOf(payload), 0, 0, sockAddr, serverAddrSize)
-        if (error == -1L) {
-            return ProbeResult.Failure("error sending UDP packet, errno:${getErrno()}")
+        val data = "TEST".utf8
+        val bufferSize = IP4_HDRLEN + ICMP_HDRLEN + data.size
+        val sendBuf = nativeHeap.allocArray<ByteVar>(bufferSize)
+        println("getting icmp packet")
+        val icmp = getIcmp(0x1, 0x9)
+
+//        val srcName = ByteArray(256)
+//        println("getting hostname")
+//        val hnResult = gethostname(srcName.refTo(0).getPointer(this), srcName.size.convert())
+//        if (hnResult == -1) {
+//            println("failed to get hostname")
+//        }
+//        val srcNameStr = srcName.decodeToString()
+        val ipLen = sizeOf<ip>().shr(2).toUShort()
+        val ip = getIp(ipLen)
+        // set src addr
+//        val srcAddrResult = inet_aton(srcNameStr, ip.pointed.ip_src.ptr)
+//        if (srcAddrResult == 0) {
+//            return ProbeResult.Failure("source addr $srcNameStr is invalid")
+//        }
+        val srcAddr = getInterfaceSockaddr("en0")
+        // set dest addr
+        val destAddr = getInAddr(destination) ?: run {
+            return ProbeResult.Failure("") // todo: write error string
         }
 
-        val buf = ByteArray(packetSize)
+        ip.pointed.ip_dst.s_addr = destAddr.s_addr
+        ip.pointed.ip_src.s_addr = srcAddr!!.sin_addr.s_addr
+        println("hmm")
+        println(ip.pointed.ip_src.s_addr)
+        // set checksum
+        ip.pointed.ip_sum = checksum(ip.reinterpret(), IP4_HDRLEN)
+        memcpy(sendBuf, ip, IP4_HDRLEN.toULong())
+        memcpy(sendBuf+IP4_HDRLEN, icmp, ICMP_HDRLEN.toULong())
+        memcpy(sendBuf+IP4_HDRLEN+ICMP_HDRLEN, data.ptr, data.size.toULong())
+        icmp.pointed.icmp_cksum = checksum((sendBuf+IP4_HDRLEN)!!.reinterpret(), ICMP_HDRLEN + data.size)
+        memcpy(sendBuf+IP4_HDRLEN, icmp, ICMP_HDRLEN.toULong())
+
+        // Submit request for a raw socket descriptor.
+        val sd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)
+        println("sd: $sd")
+        if (sd < 0) {
+            return ProbeResult.Failure("failed to get outbound socket descriptor")
+        }
+//        val bindResult = bind(sd, destination.ptr, sizeOf<socklen_tVar>().convert())
+//        if (bindResult < 0) {
+//            return ProbeResult.Failure("failed to bind send socket")
+//        } else {
+//            println("bound sending socket")
+//        }
+
+// if we're going to use sendto, we don't need to connect...either connect & send _or_ sendto
+
+//        val connectResult = connect(sd, destination.ptr, destination.sa_len.toUInt())
+//        if (connectResult < 0) {
+//            return ProbeResult.Failure("failed to connect, errno:${strerror(getErrno())?.toKString()}")
+//        }
+
+//        println("hdrincl so reached")
+//        // turns on option to include IPv4 header
+        val soResult = setsockopt(sd, IPPROTO_IP, IP_HDRINCL, cValuesOf(1), sizeOf<IntVar>().convert())
+        if (soResult < 0) {
+            println()
+            return ProbeResult.Failure("failed to set IP_HDRINCL sockopt:${strerror(getErrno())?.toKString()}")
+        }
+
+//        // Bind socket to interface index.
+//        // for linux:
+//        if (setsockopt (sd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof (ifr)) < 0) {
+//
+//        }
+//        // for mac:
+//        if (setsockopt (sd, SOL_SOCKET, IP_BOUND_IF, &ifr, sizeof (ifr)) < 0) {
+//
+//        }
+        // send packet
+        inet_ntoa(destination.reinterpret<in_addr>().readValue())?.let { println(it.toKString()) }
+        val error = sendto(sd, sendBuf, ip.pointed.ip_len.toULong(), 0, destination.ptr, sizeOf<sockaddr>().convert())
+        if (error < 0L) {
+            return ProbeResult.Failure("error sending packet: ${strerror(getErrno())?.toKString()}")
+        }
+
+        // wait for response
+        val timeval = alloc<timeval>()
+        timeval.tv_sec = 5
+        timeval.tv_usec = 0
+        val fdSet = alloc<fd_set>()
+        posix_FD_ZERO(fdSet.ptr)
+        posix_FD_SET(recvSocket, fdSet.ptr)
+        fcntl(recvSocket, F_SETFL, O_NONBLOCK)
+        println("select reached")
+        val retval = select(sd+1, fdSet.ptr, null, null, timeval.ptr);
+        if (retval == -1) {
+            return ProbeResult.Failure("failed to receive response")
+        }
+//        } else if (retval == 0) {
+//            return ProbeResult.Timeout("receiving response timed out")
+//        }
+        val buf = ByteArray(IP_MAXPACKET)
         val recvAddr = alloc<sockaddr>()
-        val err = recvfrom(recvSocket, buf.toCValues(), buf.size.convert(),0, recvAddr.ptr,
-            cValuesOf(sizeOf<sockaddr>().toUInt()))
+        println("recvfrom reached")
+        val recvSocklen: socklen_t = sizeOf<sockaddr>().convert()
+        val bytes = recvfrom(recvSocket, buf.refTo(0), buf.size.toULong(),0, recvAddr.ptr, cValuesOf(recvSocklen))
+        println("msg:${buf.toKString()}")
+        println("# of bytes:${bytes}")
         close(recvSocket)
-        close(sendSocket)
-        if (err == -1L) {
+        close(sd)
+        if (bytes == -1L) {
             val errno = getErrno()
             if (errno == 35) {
                 return ProbeResult.Timeout("timed out")
             }
             return ProbeResult.Failure("error receiving packet, errno:$errno")
+        } else {
+            val recvIphdr = buf.refTo(0).getPointer(this).reinterpret<ip>().pointed
+            val recvIcmphdr = buf.refTo(IP4_HDRLEN).getPointer(this).reinterpret<icmp>().pointed
+            if (
+                (recvIphdr.ip_p == IPPROTO_ICMP.toUByte()) &&
+                (recvIcmphdr.icmp_type == ICMP_ECHOREPLY.toUByte()) &&
+                (recvIcmphdr.icmp_code == 0.toUByte())
+            ) {
+                println("woohoo")
+//
+//                // Stop timer and calculate how long it took to get a reply.
+//                (void) gettimeofday (&t2, &tz);
+//                dt = (double) (t2.tv_sec - t1.tv_sec) * 1000.0 + (double) (t2.tv_usec - t1.tv_usec) / 1000.0;
+//
+//                // Extract source IP address from received ethernet frame.
+//                if (inet_ntop (AF_INET, &(recv_iphdr->ip_src.s_addr), rec_ip, INET_ADDRSTRLEN) == NULL) {
+//                status = errno;
+//                fprintf (stderr, "inet_ntop() failed.\nError message: %s", strerror (status));
+//                exit (EXIT_FAILURE);
+//            }
+
+//                // Report source IPv4 address and time for reply.
+//                printf ("%s  %g ms (%i bytes received)\n", rec_ip, dt, bytes);
+//                done = 1;
+//                break;  // Break out of Receive loop.
+//            }  // End if IP ethernet frame carrying ICMP_ECHOREPLY
+            }
         }
-        val recvAddress = getAddress(recvAddr)
+        val recvAddress = getAddressStr(recvAddr)
         if (recvAddress != null) {
-            return if (recvAddress == targetAddress) {
+            println("received addr:${recvAddress}")
+            return if (recvAddress == destinationStr) {
                 ProbeResult.Done(recvAddress, 0u) // TODO: time
             } else {
                 ProbeResult.SuccessfulHop(recvAddress,0u) // TODO: time
@@ -180,18 +346,22 @@ fun traceroute(args: Args) {
     val maxHops = args.maxHops
     val port = interop_htons(args.port.toUShort())
     var currentTtl = args.firstHop
-    val address = identifyHost(args.host) ?: throw Exception("failed to get an address")
-    println("address: $address, port: ${args.port}")
+    val address: sockaddr = identifyHost(args.host)?.pointed ?: throw Exception("failed to get an address")
+    val targetAddress = getAddressStr(address) ?: run {
+        // raise error
+        return
+    }
+    println("address: $targetAddress, port: ${args.port}")
     var retries = 0
     while (true) {
         println("currentTtl:$currentTtl")
         val probeResult = probeHop(
             timeoutMs = args.timeout,
             port = port,
-            address = address,
+            destination = address,
+            destinationStr = targetAddress,
             currentTtl = currentTtl,
-            packetSize = args.packetSize,
-            targetAddress = address
+            packetSize = args.packetSize
         )
         when (probeResult) {
             is ProbeResult.Failure -> {
@@ -208,6 +378,7 @@ fun traceroute(args: Args) {
             }
             is ProbeResult.Timeout -> {
                 if (retries >= args.retries) {
+                    println("timed out")
                     retries = 0
                     currentTtl += 1
                 }

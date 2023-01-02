@@ -1,9 +1,12 @@
-headers = sys/socket.h sys/errno.h netdb.h stdio.h string.h unistd.h stdlib.h netinet/in.h sys/_endian.h arpa/inet.h
-compilerOpts.ios = -D_ANSI_SOURCE -D_POSIX_SOURCE
-compilerOpts.osx = -D_ANSI_SOURCE -D_POSIX_SOURCE
+headers = sys/socket.h sys/errno.h netdb.h stdio.h string.h unistd.h stdlib.h netinet/in.h sys/_endian.h arpa/inet.h \
+sys/select.h sys/time.h netinet/in.h netinet/in_systm.h netinet/ip.h netinet/ip_icmp.h sys/select.h
+compilerOpts.ios = -D_BSD_SOURCE
+compilerOpts.osx = -D_BSD_SOURCE
 
 ---
 
 static inline int getErrno() { return errno; }
 static inline uint16_t interop_htons(uint16_t x) { return htons(x); }
+static inline uint32_t interop_htonl(uint32_t x) { return htonl(x); }
+static inline uint16_t interop_ntohs(uint16_t x) { return ntohs(x); }
 static inline in_addr_t interop_addr(const char *str) { return inet_addr(str); }

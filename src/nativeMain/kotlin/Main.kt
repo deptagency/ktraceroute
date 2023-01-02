@@ -5,9 +5,11 @@ const val DEFAULT_MAX_HOPS = 64
 const val DEFAULT_FIRST_HOP = 1
 const val DEFAULT_TIMEOUT_MS = 500
 const val DEFAULT_RETRIES = 3
-const val DEFAULT_PACKET_SIZE = 52
+const val DEFAULT_PACKET_SIZE = 64
 
 fun main(args: Array<String>) {
+    checkRoot()
+
     val parser = ArgParser("ktraceroute")
     val host by parser.option(ArgType.String, shortName = "n", description = "Host").required()
     val port by parser.option(ArgType.Int, shortName = "p", description = "Port").default(DEFAULT_PORT)
