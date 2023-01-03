@@ -8,11 +8,11 @@ class ChecksumTest {
     @Test
     fun testIpChecksum() {
         val dataLen = 4
-        val ipLen = IP4_HDRLEN + ICMP_HDRLEN + dataLen
+        val ipLen = getIcmpLen(dataLen.toLong())
         val ip = getIp(ipLen.toUShort())
         inet_aton("0.0.0.0", ip.pointed.ip_src.ptr).toUInt()
         inet_aton("0.0.0.0", ip.pointed.ip_dst.ptr).toUInt()
-        val result: UShort = checksum(ip.reinterpret(), IP4_HDRLEN)
+        val result: UShort = checksum(ip.reinterpret(), getIpHdrLen().toInt())
         assertEquals(0x9CBA.toString(16), result.toString(16))
     }
 

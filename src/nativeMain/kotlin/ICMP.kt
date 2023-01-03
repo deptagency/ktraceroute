@@ -3,9 +3,6 @@ import platform.posix.*
 import sockets.interop_htons
 import sockets.interop_ntohs
 
-const val IP4_HDRLEN = 20 // IPv4 header length
-const val ICMP_HDRLEN = 8 // ICMP header length for echo request, excludes data
-
 //int status, datalen, sd, *ip_flags;
 //const int on = 1;
 //char *interface, *target, *src_ip, *dst_ip;
@@ -57,7 +54,8 @@ fun getIp(ipLen: uint16_t): CPointer<ip> {
     ip.ip_hl = 5u // defined as header length in units of 32-byte words (minimum size is 5,
                   // only increases if there's options)
     ip.ip_tos = 0u
-    ip.ip_len = interop_htons(ipLen) // defined as packet length (header + data) in units of bytes
+    ip.ip_len = ipLen // defined as packet length (header + data) in units of bytes
+    // be careful with ip_len, as MacOS kernel strangely wants it in host order!
     ip.ip_id = interop_htons(321)
     ip.ip_off = interop_htons(0)
     ip.ip_ttl = 64u
@@ -78,6 +76,22 @@ fun getIcmp(id: Int, seq: Int): CPointer<icmp> {
 
 fun getIcmpWithChecksum(id: Int, seq: Int): CPointer<icmp> {
     val icmp = getIcmp(id, seq)
-    icmp.pointed.icmp_cksum = checksum(icmp.reinterpret(), ICMP_HDRLEN)
+    icmp.pointed.icmp_cksum = checksum(icmp.reinterpret(), sizeOf<icmp>().toInt())
     return icmp
+}
+
+fun getIpHdrLen(): Long {
+    return sizeOf<ip>()
+}
+
+fun getIcmpLen(): Long {
+    return getIpHdrLen() + getIcmpHdrLen()
+}
+
+fun getIcmpHdrLen(): Long {
+    return sizeOf<icmp>()
+}
+
+fun getIcmpLen(len: Long): Long {
+    return getIcmpLen() + len
 }
