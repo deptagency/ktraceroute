@@ -48,7 +48,7 @@ fun checksum(data: CPointer<uint8_tVar>, len: Int): UShort {
     return interop_htons(acc.inv().toUShort());
 }
 
-fun getIp(ipLen: uint16_t): CPointer<ip> {
+fun getIp(ipLen: uint16_t, ttl: UByte): CPointer<ip> {
     val ip = nativeHeap.alloc<ip>()
     ip.ip_v = 4u
     ip.ip_hl = 5u // defined as header length in units of 32-byte words (minimum size is 5,
@@ -58,7 +58,7 @@ fun getIp(ipLen: uint16_t): CPointer<ip> {
     // be careful with ip_len, as MacOS kernel strangely wants it in host order!
     ip.ip_id = interop_htons(321)
     ip.ip_off = interop_htons(0)
-    ip.ip_ttl = 64u
+    ip.ip_ttl = ttl
     ip.ip_p = IPPROTO_ICMP.toUByte()
     ip.ip_sum = 0u
     return ip.ptr

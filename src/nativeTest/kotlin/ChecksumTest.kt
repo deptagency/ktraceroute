@@ -9,7 +9,7 @@ class ChecksumTest {
     fun testIpChecksum() {
         val dataLen = 4
         val ipLen = getIcmpLen(dataLen.toLong())
-        val ip = getIp(ipLen.toUShort())
+        val ip = getIp(ipLen.toUShort(), 1u)
         inet_aton("0.0.0.0", ip.pointed.ip_src.ptr).toUInt()
         inet_aton("0.0.0.0", ip.pointed.ip_dst.ptr).toUInt()
         val result: UShort = checksum(ip.reinterpret(), getIpHdrLen().toInt())

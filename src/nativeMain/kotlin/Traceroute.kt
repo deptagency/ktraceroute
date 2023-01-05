@@ -80,15 +80,15 @@ fun identifyHost(host: String): CPointer<sockaddr>? {
 
 fun getTime(): timespec {
     memScoped {
-        val spec = alloc<timespec>()
+        val spec = nativeHeap.alloc<timespec>()
         clock_gettime(CLOCK_MONOTONIC, spec.ptr)
         return spec
     }
 }
 
-fun getElapsedTimeMs(start: timespec, end: timespec): ULong {
-    var resultMs = (end.tv_sec - start.tv_sec).toULong() * 1000u
-    resultMs += (end.tv_nsec - start.tv_nsec).toULong() / 1000u
+fun getElapsedTimeMs(start: timespec, end: timespec): Float {
+    var resultMs = (end.tv_sec - start.tv_sec).toFloat() * 1000f
+    resultMs += (end.tv_nsec - start.tv_nsec).toFloat() / (1000000.000f)
     return resultMs
 }
 
@@ -146,8 +146,8 @@ fun getAddressStr(addr: sockaddr): String? {
 }
 
 sealed class ProbeResult {
-    data class SuccessfulHop(val address: String, val time: ULong): ProbeResult()
-    data class Done(val address: String, val time: ULong): ProbeResult()
+    data class SuccessfulHop(val address: String, val time: Float): ProbeResult()
+    data class Done(val address: String, val time: Float): ProbeResult()
     data class Timeout(val info: String): ProbeResult()
     data class Failure(val info: String): ProbeResult()
 }
@@ -173,7 +173,7 @@ fun probeHop(
         val bufferSize = ip4HdrLen + icmpHdrLen + dataLen
         val sendBuf = nativeHeap.allocArray<ByteVar>(bufferSize)
         val icmp = getIcmp(0x1, 0x9)
-        val ip = getIp(bufferSize.toUShort())
+        val ip = getIp(bufferSize.toUShort(), currentTtl.toUByte())
         val srcAddr = getInterfaceSockaddr("en0") ?: run {
             return ProbeResult.Failure("failed to get interface (for setting packet source)")
         }
@@ -218,6 +218,7 @@ fun probeHop(
         if (error < 0L) {
             return ProbeResult.Failure("error sending packet: ${strerror(getErrno())?.toKString()}")
         }
+        val t1 = getTime()
 
         // wait for response
         val timeval = alloc<timeval>()
@@ -246,41 +247,36 @@ fun probeHop(
                 return ProbeResult.Timeout("timed out")
             }
             return ProbeResult.Failure("error receiving packet, errno:$errno")
-        } else {
-            val recvIphdr = buf.refTo(0).getPointer(this).reinterpret<ip>().pointed
-            val recvIcmphdr = buf.refTo(ip4HdrLen.toInt()).getPointer(this).reinterpret<icmp>().pointed
-            if (
-                (recvIphdr.ip_p == IPPROTO_ICMP.toUByte()) &&
-                (recvIcmphdr.icmp_type == ICMP_ECHOREPLY.toUByte()) &&
-                (recvIcmphdr.icmp_code == 0.toUByte())
-            ) {
-                println("woohoo")
-//
-//                // Stop timer and calculate how long it took to get a reply.
-//                (void) gettimeofday (&t2, &tz);
-//                dt = (double) (t2.tv_sec - t1.tv_sec) * 1000.0 + (double) (t2.tv_usec - t1.tv_usec) / 1000.0;
-//
-//                // Extract source IP address from received ethernet frame.
-//                if (inet_ntop (AF_INET, &(recv_iphdr->ip_src.s_addr), rec_ip, INET_ADDRSTRLEN) == NULL) {
-//                status = errno;
-//                fprintf (stderr, "inet_ntop() failed.\nError message: %s", strerror (status));
-//                exit (EXIT_FAILURE);
-//            }
-
-//                // Report source IPv4 address and time for reply.
-//                printf ("%s  %g ms (%i bytes received)\n", rec_ip, dt, bytes);
-//                done = 1;
-//                break;  // Break out of Receive loop.
-//            }  // End if IP ethernet frame carrying ICMP_ECHOREPLY
-            }
         }
-        val recvAddress = getAddressStr(recvAddr)
-        if (recvAddress != null) {
-            println("received addr:${recvAddress}")
-            return if (recvAddress == destinationStr) {
-                ProbeResult.Done(recvAddress, 0u) // TODO: time
-            } else {
-                ProbeResult.SuccessfulHop(recvAddress,0u) // TODO: time
+        val recvIphdr = buf.refTo(0).getPointer(this).reinterpret<ip>().pointed
+        val recvIcmphdr = buf.refTo(ip4HdrLen.toInt()).getPointer(this).reinterpret<icmp>().pointed
+        if (
+            (recvIphdr.ip_p == IPPROTO_ICMP.toUByte()) &&
+            (recvIcmphdr.icmp_type == ICMP_TIMXCEED.toUByte()) &&
+            (recvIcmphdr.icmp_code == ICMP_TIMXCEED_INTRANS.toUByte())
+        ) {
+            val t2 = getTime()
+            val elapsedTimeMs = getElapsedTimeMs(t1, t2)
+            val recvAddress = getAddressStr(recvAddr)
+            if (recvAddress != null) {
+                return if (recvAddress == destinationStr) {
+                    ProbeResult.Done(recvAddress, elapsedTimeMs)
+                } else {
+                    ProbeResult.SuccessfulHop(recvAddress,elapsedTimeMs)
+                }
+            }
+        } else if (
+            (recvIphdr.ip_p == IPPROTO_ICMP.toUByte()) &&
+            (recvIcmphdr.icmp_type == ICMP_ECHOREPLY.toUByte()) &&
+            (recvIcmphdr.icmp_code == 0.toUByte())
+        ) {
+            val t2 = getTime()
+            val elapsedTimeMs = getElapsedTimeMs(t1, t2)
+            val recvAddress = getAddressStr(recvAddr)
+            if (recvAddress != null) {
+                if (recvAddress == destinationStr) {
+                    return ProbeResult.Done(recvAddress, elapsedTimeMs)
+                }
             }
         }
         return ProbeResult.Failure("address not found in response")
@@ -296,10 +292,8 @@ fun traceroute(args: Args) {
         // raise error
         return
     }
-    println("address: $targetAddress, port: ${args.port}")
     var retries = 0
     while (true) {
-        println("currentTtl:$currentTtl")
         val probeResult = probeHop(
             timeoutMs = args.timeout,
             port = port,
@@ -310,24 +304,46 @@ fun traceroute(args: Args) {
         )
         when (probeResult) {
             is ProbeResult.Failure -> {
+                if (retries > 0) {
+                    println()
+                    retries = 0
+                }
                 println("failed: ${probeResult.info}")
                 return
             }
             is ProbeResult.Done -> {
-                println("finished")
+                if (retries > 0) {
+                    println()
+                    retries = 0
+                }
+                println("hop ${currentTtl}, ${probeResult.address}: ${probeResult.time}ms")
+                println("done!")
                 return
             }
             is ProbeResult.SuccessfulHop -> {
-                currentTtl += 1
+                if (retries > 0) {
+                    println()
+                    retries = 0
+                }
                 println("hop ${currentTtl}, ${probeResult.address}: ${probeResult.time}ms")
+                currentTtl += 1
             }
             is ProbeResult.Timeout -> {
+                if (retries == 0) {
+                    print("hop $currentTtl, ")
+                }
                 if (retries >= args.retries) {
-                    println("timed out")
+                    println("* timed out")
                     retries = 0
                     currentTtl += 1
+                    continue
                 }
+                print("* ")
                 retries += 1
+            }
+
+            else -> {
+                println("this shouldn't be happening")
             }
         }
         if (currentTtl >= maxHops) {
